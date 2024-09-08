@@ -1,2 +1,2 @@
 # LeastCostPathAnalysisLisbon
-Least Cost Path Analysis for the study of raw material trade networks in European prehistory in Iberia. 
+Least Cost Path Analysis R code used to study raw material trade networks in prehistoric Europe in Iberia.
