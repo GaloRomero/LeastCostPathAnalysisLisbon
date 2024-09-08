@@ -1,0 +1,685 @@
+---
+title: "LeastCostPathAnalysisLisbon"
+author: "Galo Romero García"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, echo=TRUE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+	message = FALSE,
+	warning = FALSE,
+	include = FALSE
+)
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+install.packages('rmarkdown')
+install.packages('tinytex')
+install.packages('knitr')
+library(rmarkdown)
+library(tinytex)
+library(knitr)
+```
+
+#### Cargamos las librerías necesarias para el análisis de rutas óptimas 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+install.packages("C:/rgeosRpackage/rgeos_0.6-4.tar.gz", type = "source")
+library(rgeos)
+install.packages("pbapply")
+library(pbapply)
+# Replace "C:/leastcostpathPackageR/leastcostpath_1.8.7.tar.gz" with the actual path to the downloaded archive file
+install.packages("C:/leastcostpathPackageR/leastcostpath_1.8.7.tar.gz", repos = NULL, type = "source")
+library(leastcostpath)
+install.packages("gdistance")
+library(gdistance)
+install.packages("raster")
+library(raster)
+install.packages("rasterVis")
+library(rasterVis)
+library(sf)
+```
+
+#### Cargamos las capas necesarias para el análisis de rutas óptimas 
+
+-DTM=ELEVATION DATA
+
+```{r setup, echo=TRUE, message=FALSE, warning=FALSE}
+dem<- raster('C:/lcpAmberLisbon/input/DTM/DTM.tif')
+
+# Set the CRS using EPSG:32629
+projection(dem) <- "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+
+# Check the CRS of the raster object
+crs(dem)
+
+# Now 'dem' is in EPSG:32629 projection
+
+# Define a custom brown color palette
+brown_palette <- colorRampPalette(c("#F5DEB3", "#8B4513"))
+
+# Generate colors
+colors <- brown_palette(255)  # Adjust 255 to the number of colors you want in the palette
+
+#OPTION 1 
+# Plot the DEM with the brown color palette
+levelplot(dem, col.regions = colors)
+
+#OPTION 2
+# Plot the DEM with brown color palette
+plot(dem, col = colors, main = "Digital Elevation Model (DEM) - Lisbon", axes = TRUE)
+
+# Add a color legend
+legend("topright", legend = "Elevation", fill = colors)
+
+# Add scale bar (in meters)
+scale_bar_length <- 2000  # Length of scale bar in meters
+scale_bar_position <- "bottomright"  # Position of scale bar
+
+# Calculate coordinates for the scale bar
+x1 <- max(dem@extent@xmax) - scale_bar_length
+x2 <- max(dem@extent@xmax)
+y <- min(dem@extent@ymin, dem@extent@ymax)
+
+# Draw the scale bar
+segments(x0 = x1, y0 = y, x1 = x2, y1 = y, lwd = 5)
+
+# Add text indicating the length of the scale bar
+text(x = (x1 + x2) / 2, y = y - 200, labels = paste0(scale_bar_length, " m"), pos = 3, cex = 1.5)
+
+# Add "m" label for unit of measure on the right side
+mtext("meters", side = 4, line = 5)
+```
+
+-Localizaciones con presencia de ámbar
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+
+library(sp)
+
+# Define the UTM CRS
+utm_crs <- CRS("+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs")
+
+# Define the UTM coordinates: Gruta de Correio-Mor, Bela Vista, Pragansa y Cabecinho de Capitoa.
+x <- c(483754.3, 463124.6, 494890.3, 470545.9)
+y <- c(4297567, 4293731, 4338752, 4307934)
+
+# Combine the coordinates into a matrix
+coords <- cbind(x, y)
+
+# Create the SpatialPoints object
+locs <- SpatialPoints(coords = coords, proj4string = utm_crs)
+
+# Print the SpatialPoints object
+print(locs)
+
+#Plot the sp_points object
+plot(locs,
+     pch = 1)
+
+
+```
+
+-Distrito de Lisboa 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#Cargamos el distrito de Lisboa 
+lisbon<-shapefile('C:/lcpAmberLisbon/input/mask_lisbon/lisboa_utm.shp')
+plot(lisbon)
+View(lisbon)
+#Asignamos CRS al distrito de Lisboa 
+crs(lisbon) <- "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+```
+
+
+-Llanuras de inundación SNIG
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#Cargamos las llanuras de inundacion
+llanuras<-shapefile('C:/lcpAmberLisbon/input/llanuras_inun_VER/llanura_rios.shp')
+plot(llanuras)
+View(llanuras)
+#Asignamos CRS a las llanuras de inundacion
+crs(llanuras) <- "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+```
+
+-Hidrografía:
+
+-Rios
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#Cargamos los rios
+rios<-shapefile('C:/lcpAmberLisbon/input/hidrografiaBuffer30m/rios_vados_buff15m.shp')
+plot(rios)
+View(rios)
+#Asignamos CRS a los rios
+crs(rios) <- "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+```
+
+-Riveras
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#Cargamos las riveras
+riveras<-shapefile('C:/lcpAmberLisbon/input/hidrografiaBuffer30m/ribeira_vados_buff15m.shp')
+plot(riveras)
+View(riveras)
+#Asignamos CRS a los rios
+crs(riveras) <- "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+```
+
+
+1. la superficie de coste basada en la pendiente medida en gradiente matemático: 48 vecinos (común para ambos modelos estacionales)
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+#cost functions currently implemented within leastcostpath
+cfs <- c("tobler", "tobler offpath", "irmischer-clarke male", "irmischer-clarke offpath male", "irmischer-clarke female", "irmischer-clarke offpath female",
+         "modified tobler", "wheeled transport", "herzog", "llobera-sluckin", "campbell 2019")
+
+#Llobera-Sluckin a 32 vecinos 
+#Creamos la superficie de coste considerando solamente la pendiente del terreno
+cs_slope_llob_48 <- create_slope_cs(
+                              dem = dem, 
+                              cost_function = 'llobera-sluckin', 
+                              neighbours = 48)
+#Ploteamos las cs
+plot(raster(cs_slope_llob_48))
+#Nos percatamos que la extensión espacial es superior a la deseada: crop_cs
+cs_slope_llob_48_crop<-crop_cs(cs_slope_llob_48, lisbon)
+plot(raster(cs_slope_llob_48_crop))
+#De transition layer a raster
+cs_slope_llob_48_crop_ras<-raster(cs_slope_llob_48_crop)
+
+plot(cs_slope_llob_48_crop_ras)
+#Exportamos los ficheros raster 
+writeRaster(cs_slope_llob_48_crop_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceSlope/superCoste48Llobera.tif",
+            overwrite=TRUE)
+```
+
+# Modelo Invierno - Estación húmeda 
+
+-Creamos la barreras hidrográficas 
+
+* Rios
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+barrera_rios_inv48<-create_barrier_cs(raster = dem,
+                           barrier = rios,
+                           neighbours = 48,
+                           field = 2,
+                           background = 1)
+plot(raster(barrera_rios_inv48))
+barrera_rios_inv48_crop<-crop_cs(barrera_rios_inv48, lisbon)
+plot(raster(barrera_rios_inv48_crop))
+#De transition layer a raster
+barrera_rios_inv48_crop_ras<-raster(barrera_rios_inv48_crop)
+plot(barrera_rios_inv48_crop_ras)
+#Exportamos los ficheros raster 
+writeRaster(barrera_rios_inv48_crop_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceRivers/barreras_rios_inv48.tif",
+            overwrite=TRUE)
+```
+
+* Riveras
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+barrera_riveras_inv48<-create_barrier_cs(raster = dem,
+                           barrier = riveras,
+                           neighbours = 48,
+                           field = 2,
+                           background = 1)
+plot(raster(barrera_riveras_inv48))
+barrera_riveras_inv48_crop<-crop_cs(barrera_riveras_inv48, lisbon)
+plot(raster(barrera_riveras_inv48_crop))
+#De transition layer a raster
+barrera_riveras_inv48_crop_ras<-raster(barrera_riveras_inv48_crop)
+plot(barrera_riveras_inv48_crop_ras)
+#Exportamos los ficheros raster 
+writeRaster(barrera_riveras_inv48_crop_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceRivers/barreras_riveras_inv48.tif",
+            overwrite=TRUE)
+```
+
+-Creamos la barreras geomorfologicas fluviales
+
+Con los datos espaciales del SNIG referidos a las llanuras de inundación. 
+Esta barrera pondera de manera negativa en invierno y de manera positiva en verano. 
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+barrera_llanuras_inv48<-create_barrier_cs(raster = dem,
+                           barrier = llanuras,
+                           neighbours = 48,
+                           field = 4,
+                           background = 1)
+plot(raster(barrera_llanuras_inv48))
+barrera_llanuras_inv48_crop<-crop_cs(barrera_llanuras_inv48, lisbon)
+plot(raster(barrera_llanuras_inv48_crop))
+#De transition layer a raster
+barrera_llanuras_inv48_crop_ras<-raster(barrera_llanuras_inv48_crop)
+plot(barrera_llanuras_inv48_crop_ras)
+#Exportamos los ficheros raster 
+writeRaster(barrera_llanuras_inv48_crop_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceAlluvialPlains/barreras_llanuras_inv48.tif",
+            overwrite=TRUE)
+```
+
+Creamos mediante la libreria "landform" las formas del terreno.Una vez tengamos las barreras la capa referidas a las llanuras (plains) debemos erasearlas con las llanuras del SNIG. 
+
+De este modo obtenemos 2 componentes de coste a incluir en la superficie de coste:
+
+- Las llanuras de inundacion del SNIG (mayor coste)
+
+- Zonas aplanadas (plains) eraseadas con las llanuras de inundación (menor coste)
+
+* Probamos con una ventana focal de sn=11 y ln=31
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Load the 'landform' package
+library(landform)
+library(terra)
+# Run the function using the toy dataset
+# First we will use "landform.classification" value for the 'class.type' parameter
+# Odd = ca not be divided by 2: 13, 15 etc. 
+lisbon_landforms <- landform(
+                      dem,
+                      class.type = "landform.classification",
+                           # In spatial analysis, using an odd-sized window ensures that there is a central                                           cell.This central cell is crucial because it determines the value of the focal                                           statistic being calculated for each location in the raster or grid.
+                      sn = 11,  # Small neighborhood size (odd)
+                      ln = 31,   # Large neighborhood size (odd)
+                      leg.pos = "topright",
+                      leg.cex = 0.7
+                    )
+
+# Plot the plain landforms 
+terra::plot(lisbon_landforms$Plains)
+str(lisbon_landforms)
+
+# Now we store the plains in an object to compare it with the SNIG plains
+plains_landform <- lisbon_landforms$Plains
+plot(plains_landform)
+class(plains_landform)
+
+###Proceso para extraer tan solo los valores 5 asociados a las zonas planas (plains)
+# Crea un nuevo ráster con valores NA donde no es 5
+desired_raster <- plains_landform
+values(desired_raster) <- ifelse(values(plains_landform) == 5, 5, NA)
+
+# Establece los valores NA en 0
+desired_raster <- clamp(desired_raster, 0, 5)
+
+# Muestra el ráster deseado
+print(desired_raster)
+
+plot(desired_raster)
+
+plains_landform_5 <- desired_raster
+
+plot(plains_landform_5)
+
+print(plains_landform_5)
+
+# Export plains to raster file 
+writeRaster(plains_landform_5,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceLanformPlains/plains_landform_5_11x31.tif",
+            overwrite=TRUE)
+
+# Convert SpatRaster to RasterLayer
+plains_landform_5_ras <- raster(plains_landform_5)
+print(plains_landform_5_ras)
+terra::plot(plains_landform_5_ras)
+
+# Now 'plains_landform_5_ras' is a RasterLayer object without spatial information
+```
+
+-Ahora "eraseamos la capa de llanuras-landform" con la capa de llanuras de inundación.
+
+- PRECAUCION: cargamas la capa de llanuras eraseadas solamente con los vados con el buffer de 300 m. 
+
+¿Por qué? 
+
+Porque si cogemos las llanuras en las que tiene eraseados los vados y los rios, al erasear el raster 
+plains_landform_5_ras, los rios que se encuentran en las llanuras serian considerados zonas aplanadas (plains), asignandoles
+un valor de coste que luego se multiplicaria con el de los rios (barrera_rios) siendo erroneo de cara al computo de 
+la superficie de coste
+
+Tambien partimos de la hipotesis que los vados (zonas de interseccion entre rios y caminos historicos o vias pecuarias)
+se perfilan como zonas aplanadas. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Capa llanuras-landform ERASE con llanuras-SNIG 
+# Cargamos las llanuras eraseadas solamente con los vados 
+
+llanuras_vados<-shapefile('C:/lcpAmberLisbon/input/llanurasEraseVados/llanuras_erase_vados.shp')
+plot(llanuras_vados)
+View(llanuras_vados)
+#Asignamos CRS al distrito de Lisboa 
+crs(llanuras_vados) <- "+proj=utm +zone=29 +datum=WGS84 +units=m +no_defs"
+# Suponiendo que 'plains_landform_5_ras' es tu RasterLayer y 'llanuras' es tu SpatialPolygonsDataFrame
+
+# Crear una máscara invertida a partir de los polígonos
+inverted_mask <- mask(plains_landform_5_ras, llanuras_vados, inverse = TRUE)
+
+# Usar la máscara invertida para extraer las celdas del raster que no coinciden con los polígonos
+extracted_raster <- plains_landform_5_ras * inverted_mask
+
+plains_landform_5_ras_erase <- extracted_raster
+
+plot(plains_landform_5_ras_erase)
+
+# Ahora 'extracted_raster' contiene todas las celdas del raster original excepto las que coinciden con los polígonos en 'llanuras_vados'
+
+writeRaster(plains_landform_5_ras_erase,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceLanformPlains/plains_landform_5_ras_erase1.tif",
+            overwrite=TRUE)
+
+```
+
+- Ahora creamos la barrera geomorfologica estructural (ponderando un menor coste para las zonas eraseadas con las llanuras de inundacion del SNIG) pero con la capa "plains_landform_5_ras_erase": sn=11 y ln=31
+
+- Las llanuras creadas con el paquete landform, poseen menor coste que las llanuras de inundacion del SNIG 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+barrera_llanuras_landform48<-create_barrier_cs(raster = dem,
+                           barrier = plains_landform_5_ras_erase,
+                           neighbours = 48,
+                           field = 0.5,
+                           background = 1)
+plot(raster(barrera_llanuras_landform48))
+barrera_llanuras_landform48_crop<-crop_cs(barrera_llanuras_landform48, lisbon)
+plot(raster(barrera_llanuras_landform48_crop))
+#De transition layer a raster
+barrera_llanuras_landform48_crop_ras<-raster(barrera_llanuras_landform48_crop)
+plot(barrera_llanuras_landform48_crop_ras)
+#Exportamos los ficheros raster 
+writeRaster(barrera_llanuras_landform48_crop_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceLanformPlains/barrera_llanuras_landform48.tif",overwrite=TRUE)
+```
+
+-Multiplicamos las barreras hidrograficas y geomorfologicas con las superficie de coste basada en la pendiente 
+
+El valor de cada pixel viene dado en Kj/m. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+cs_invierno48 <- cs_slope_llob_48_crop * barrera_rios_inv48_crop * barrera_riveras_inv48_crop * barrera_llanuras_inv48_crop * barrera_llanuras_landform48_crop
+plot(raster(cs_invierno48))
+cs_invierno48_ras<-raster(cs_invierno48)
+#Exportamos los ficheros raster 
+writeRaster(cs_invierno48_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceInvFinal/cs_invierno48.tif",
+            overwrite=TRUE)
+```
+
+-Pasamos de Kj a Kcal. Para ello multiplicamos la superficie de coste por '0.239'
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+cs_invierno48_kcal <- cs_invierno48 * 0.239
+plot(raster(cs_invierno48_kcal))
+cs_invierno48_kcal_ras<-raster(cs_invierno48_kcal)
+#Exportamos los ficheros raster 
+writeRaster(cs_invierno48_kcal_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceInvFinal/cs_invierno48_kcal.tif",
+            overwrite=TRUE)
+```
+
+##LCP Network - Estación lluviosa o Invierno
+
+- Debemos plantearnos emplear como barrera_llanuras del SNIG una capa en la que no se hallan eraseado los rios a la llanura de inundacion. 
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+lcp_network_correio48 <- create_lcp_network(
+                                          cs_invierno48_kcal, 
+                                          locations = locs,
+                                          nb_matrix = cbind(c(1,1,1), 
+                                                            c(2,3,4)), 
+                                          cost_distance = TRUE,
+                                          parallel = FALSE)
+
+plot(raster(cs_invierno48_kcal), col = grey.colors(100))
+plot(lcp_network_correio48, add = T, col = "red")
+plot(rios, add = T, col = "dark blue")
+plot(riveras, add = T, col = "blue")
+plot(llanuras, add = T, col = "dark blue")
+plot(locs, add = T, col = "yellow", pch = 16)
+
+#saved the NETWORK as an ESRI Shapefile
+writeOGR(lcp_network_correio48, dsn="C:/lcpAmberLisbon/output/lcpTesis48vec/lcpNetworkInv", layer="lcp_network_correio48" ,driver="ESRI Shapefile",
+         overwrite=TRUE)
+
+lcp_network_belavista48 <- create_lcp_network(
+                                          cs_invierno48_kcal, 
+                                          locations = locs,
+                                          nb_matrix = cbind(c(2,2,2), 
+                                                            c(1,3,4)), 
+                                          cost_distance = TRUE,
+                                          parallel = FALSE)
+
+plot(raster(cs_invierno48_kcal), col = grey.colors(100))
+plot(lcp_network_belavista48, add = T, col = "red")
+plot(rios, add = T, col = "dark blue")
+plot(riveras, add = T, col = "blue")
+plot(llanuras, add = T, col = "dark blue")
+plot(locs, add = T, col = "yellow", pch = 16)
+
+#saved the NETWORK as an ESRI Shapefile
+writeOGR(lcp_network_belavista48, dsn="C:/lcpAmberLisbon/output/lcpTesis48vec/lcpNetworkInv", layer="lcp_network_belavista48" ,driver="ESRI Shapefile",
+         overwrite=TRUE)
+
+lcp_network_pragansa48 <- create_lcp_network(
+                                          cs_invierno48_kcal, 
+                                          locations = locs,
+                                          nb_matrix = cbind(c(3,3,3), 
+                                                            c(1,2,4)), 
+                                          cost_distance = TRUE,
+                                          parallel = FALSE)
+
+plot(raster(cs_invierno48_kcal), col = grey.colors(100))
+plot(lcp_network_pragansa48, add = T, col = "red")
+plot(rios, add = T, col = "dark blue")
+plot(riveras, add = T, col = "blue")
+plot(llanuras, add = T, col = "dark blue")
+plot(locs, add = T, col = "yellow", pch = 16)
+
+#saved the NETWORK as an ESRI Shapefile
+writeOGR(lcp_network_pragansa48, dsn="C:/lcpAmberLisbon/output/lcpTesis48vec/lcpNetworkInv", layer="lcp_network_pragansa48" ,driver="ESRI Shapefile",
+         overwrite=TRUE)
+
+lcp_network_capitoa48 <- create_lcp_network(
+                                          cs_invierno48_kcal, 
+                                          locations = locs,
+                                          nb_matrix = cbind(c(4,4,4), 
+                                                            c(1,2,3)), 
+                                          cost_distance = TRUE,
+                                          parallel = FALSE)
+
+plot(raster(cs_invierno48_kcal), col = grey.colors(100))
+plot(lcp_network_capitoa48, add = T, col = "red")
+plot(rios, add = T, col = "dark blue")
+plot(riveras, add = T, col = "blue")
+plot(llanuras, add = T, col = "dark blue")
+plot(locs, add = T, col = "yellow", pch = 16)
+
+#saved the NETWORK as an ESRI Shapefile
+writeOGR(lcp_network_capitoa48, dsn="C:/lcpAmberLisbon/output/lcpTesis48vec/lcpNetworkInv", layer="lcp_network_capitoa48" ,driver="ESRI Shapefile",
+         overwrite=TRUE)
+```
+
+# Modelo Verano - Estación seca
+
+-Creamos la barreras hidrográficas 
+
+* Rios
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+barrera_rios_ver48<-create_barrier_cs(raster = dem,
+                           barrier = rios,
+                           neighbours = 48,
+                           field = 1.5,
+                           background = 1)
+plot(raster(barrera_rios_ver48))
+barrera_rios_ver48_crop<-crop_cs(barrera_rios_ver48, lisbon)
+plot(raster(barrera_rios_ver48_crop))
+#De transition layer a raster
+barrera_rios_ver48_crop_ras<-raster(barrera_rios_ver48_crop)
+plot(barrera_rios_ver48_crop_ras)
+#Exportamos los ficheros raster 
+writeRaster(barrera_rios_ver48_crop_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceRivers/barreras_rios_ver48.tif",
+            overwrite=TRUE)
+```
+
+* Riveras
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+barrera_riveras_ver48<-create_barrier_cs(raster = dem,
+                           barrier = riveras,
+                           neighbours = 48,
+                           field = 1.5,
+                           background = 1)
+plot(raster(barrera_riveras_ver48))
+barrera_riveras_ver48_crop<-crop_cs(barrera_riveras_ver48, lisbon)
+plot(raster(barrera_riveras_ver48_crop))
+#De transition layer a raster
+barrera_riveras_ver48_crop_ras<-raster(barrera_riveras_ver48_crop)
+plot(barrera_riveras_ver48_crop_ras)
+#Exportamos los ficheros raster 
+writeRaster(barrera_riveras_ver48_crop_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceRivers/barreras_riveras_ver48.tif",
+            overwrite=TRUE)
+```
+
+-Creamos la barreras geomorfologicas fluviales
+
+Con los datos espaciales del SNIG referidos a las llanuras de inundación. 
+Esta barrera pondera de manera negativa en invierno y de manera positiva en verano. 
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+barrera_llanuras_ver48<-create_barrier_cs(raster = dem,
+                           barrier = llanuras,
+                           neighbours = 48,
+                           field = 0.5,
+                           background = 1)
+plot(raster(barrera_llanuras_ver48))
+barrera_llanuras_ver48_crop<-crop_cs(barrera_llanuras_ver48, lisbon)
+plot(raster(barrera_llanuras_ver48_crop))
+#De transition layer a raster
+barrera_llanuras_ver48_crop_crop_ras<-raster(barrera_llanuras_ver48_crop)
+plot(barrera_llanuras_ver48_crop_crop_ras)
+#Exportamos los ficheros raster 
+writeRaster(barrera_llanuras_ver48_crop_crop_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceAlluvialPlains/barreras_llanuras_ver48.tif",
+            overwrite=TRUE)
+```
+
+-Multiplicamos las barreras hidrograficas y geomorfologicas con las superficie de coste basada en la pendiente 
+
+El valor de cada pixel viene dado en Kj/m. 
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+cs_verano <- cs_slope_llob_48_crop * barrera_rios_ver48_crop * barrera_riveras_ver48_crop * barrera_llanuras_ver48_crop * barrera_llanuras_landform48_crop
+plot(raster(cs_verano))
+cs_verano_ras<-raster(cs_verano)
+#Exportamos los ficheros raster 
+writeRaster(cs_verano_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceVerFinal/cs_verano48.tif",
+            overwrite=TRUE)
+```
+
+-Pasamos de Kj a Kcal. Para ello multiplicamos la superficie de coste por '0.239'
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+cs_verano_kcal <- cs_verano * 0.239
+plot(raster(cs_verano_kcal))
+cs_verano_kcal_ras<-raster(cs_verano_kcal)
+#Exportamos los ficheros raster 
+writeRaster(cs_verano_kcal_ras,"C:/lcpAmberLisbon/output/lcpTesis48vec/costSurfaceVerFinal/cs_verano48_kcal.tif",
+            overwrite=TRUE)
+```
+
+##LCP Network - Estación seca
+
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+lcp_network_correio1_48 <- create_lcp_network(
+                                          cs_verano_kcal, 
+                                          locations = locs,
+                                          nb_matrix = cbind(c(1,1,1), 
+                                                            c(2,3,4)), 
+                                          cost_distance = TRUE,
+                                          parallel = FALSE)
+
+plot(raster(cs_verano_kcal), col = grey.colors(100))
+plot(lcp_network_correio1_48, add = T, col = "red")
+plot(rios, add = T, col = "dark blue")
+plot(riveras, add = T, col = "blue")
+plot(llanuras, add = T, col = "dark blue")
+plot(locs, add = T, col = "yellow", pch = 16)
+
+#saved the NETWORK as an ESRI Shapefile
+writeOGR(lcp_network_correio1_48, dsn="C:/lcpAmberLisbon/output/lcpTesis48vec/lcpNetworkVer", layer="lcp_network_correio1" ,driver="ESRI Shapefile",
+         overwrite=TRUE)
+
+lcp_network_belavista1_48 <- create_lcp_network(
+                                          cs_verano_kcal, 
+                                          locations = locs,
+                                          nb_matrix = cbind(c(2,2,2), 
+                                                            c(1,3,4)), 
+                                          cost_distance = TRUE,
+                                          parallel = FALSE)
+
+plot(raster(cs_verano_kcal), col = grey.colors(100))
+plot(lcp_network_belavista1_48, add = T, col = "red")
+plot(rios, add = T, col = "dark blue")
+plot(riveras, add = T, col = "blue")
+plot(llanuras, add = T, col = "dark blue")
+plot(locs, add = T, col = "yellow", pch = 16)
+
+#saved the NETWORK as an ESRI Shapefile
+writeOGR(lcp_network_belavista1_48, dsn="C:/lcpAmberLisbon/output/lcpTesis48vec/lcpNetworkVer", layer="lcp_network_belavista1" ,driver="ESRI Shapefile",
+         overwrite=TRUE)
+
+lcp_network_pragansa1_48 <- create_lcp_network(
+                                          cs_verano_kcal, 
+                                          locations = locs,
+                                          nb_matrix = cbind(c(3,3,3), 
+                                                            c(1,2,4)), 
+                                          cost_distance = TRUE,
+                                          parallel = FALSE)
+
+plot(raster(cs_verano_kcal), col = grey.colors(100))
+plot(lcp_network_pragansa1_48, add = T, col = "red")
+plot(rios, add = T, col = "dark blue")
+plot(riveras, add = T, col = "blue")
+plot(llanuras, add = T, col = "dark blue")
+plot(locs, add = T, col = "yellow", pch = 16)
+
+#saved the NETWORK as an ESRI Shapefile
+writeOGR(lcp_network_pragansa1_48, dsn="C:/lcpAmberLisbon/output/lcpTesis48vec/lcpNetworkVer", layer="lcp_network_pragansa1" ,driver="ESRI Shapefile",
+         overwrite=TRUE)
+
+lcp_network_capitoa1_48 <- create_lcp_network(
+                                          cs_verano_kcal, 
+                                          locations = locs,
+                                          nb_matrix = cbind(c(4,4,4), 
+                                                            c(1,2,3)), 
+                                          cost_distance = TRUE,
+                                          parallel = FALSE)
+
+plot(raster(cs_verano_kcal), col = grey.colors(100))
+plot(lcp_network_capitoa1_48, add = T, col = "red")
+plot(rios, add = T, col = "dark blue")
+plot(riveras, add = T, col = "blue")
+plot(llanuras, add = T, col = "dark blue")
+plot(locs, add = T, col = "yellow", pch = 16)
+
+#saved the NETWORK as an ESRI Shapefile
+writeOGR(lcp_network_capitoa1_48, dsn="C:/lcpAmberLisbon/output/lcpTesis48vec/lcpNetworkVer", layer="lcp_network_capitoa1" ,driver="ESRI Shapefile",
+         overwrite=TRUE)
+```
+
+
+-Información de la sesión y versión de librerías empleadas
+
+```{r setup, echo=TRUE, message=FALSE, warning=FALSE}
+# Display session information
+sessionInfo()
+
+# Get information about installed packages
+installed_packages <- installed.packages()
+
+# Print the names and versions of loaded packages
+cat("Loaded Packages:\n")
+cat(installed_packages[, c("Package", "Version")], sep = "\n")
+
+```
+
+
+
